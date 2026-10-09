@@ -26,11 +26,15 @@ PYTHON=
 PROXY=
 LANG_SETTING=
 KEEP_SUDO_CACHE=0
+CHECK_ONLY=0
 
 usage() {
     cat <<'EOF'
 usage: install.sh --agent-user USER [options]
+       install.sh --check [--python PATH]
 
+  --check              preflight only: verify this checkout and the Python
+                       are root-owned and not writable by others; change nothing
   --agent-user USER    account your AI agent runs as (gets permission to run tw)
   --service-user USER  account that owns the credentials (default: xtwitter on
                        Linux, _xtwitter on macOS; created if missing)
@@ -55,6 +59,7 @@ while [ $# -gt 0 ]; do
         --proxy) PROXY=${2:?}; shift 2 ;;
         --lang) LANG_SETTING=${2:?}; shift 2 ;;
         --keep-sudo-cache) KEEP_SUDO_CACHE=1; shift ;;
+        --check) CHECK_ONLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown argument: $1" ;;
     esac
@@ -67,13 +72,17 @@ case "$OS" in
     Darwin) : "${SERVICE_USER:=_xtwitter}" ;;
     *) die "unsupported OS: $OS" ;;
 esac
-[ -n "$AGENT_USER" ] || { usage >&2; die "--agent-user is required"; }
 case "$AGENT_USER$SERVICE_USER" in
     *[!A-Za-z0-9._-]*) die "user names may only contain letters, digits, '.', '_' and '-'" ;;
 esac
-id "$AGENT_USER" >/dev/null 2>&1 || die "agent user does not exist: $AGENT_USER"
-[ "$AGENT_USER" != root ] || die "the agent user must not be root"
-[ "$AGENT_USER" != "$SERVICE_USER" ] || die "agent and service user must differ"
+if [ -n "$AGENT_USER" ]; then
+    id "$AGENT_USER" >/dev/null 2>&1 || die "agent user does not exist: $AGENT_USER"
+    [ "$AGENT_USER" != root ] || die "the agent user must not be root"
+    [ "$AGENT_USER" != "$SERVICE_USER" ] || die "agent and service user must differ"
+elif [ "$CHECK_ONLY" = 0 ]; then
+    usage >&2
+    die "--agent-user is required"
+fi
 
 # ── helpers ──────────────────────────────────────────────────────────────
 owner_uid() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }
@@ -117,6 +126,7 @@ if [ -z "$PYTHON" ]; then
     esac
 fi
 [ -x "$PYTHON" ] || die "Python not found at $PYTHON (macOS: install from python.org; Homebrew is user-writable)"
+# macOS python.org installs may be admin-group writable; FORK.md shows the chmod that fixes it.
 "$PYTHON" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     || die "$PYTHON is older than 3.10"
 PY_REAL=$("$PYTHON" -I -c 'import os, sys; print(os.path.realpath(sys.executable))')
@@ -126,6 +136,11 @@ require_root_owned "$PY_STDLIB"
 require_root_owned_tree "$PY_STDLIB"
 "$PYTHON" -I -c 'import venv, ensurepip' 2>/dev/null \
     || die "$PYTHON lacks venv/ensurepip (Debian/Ubuntu: apt install python3-venv)"
+
+if [ "$CHECK_ONLY" = 1 ]; then
+    echo "preflight OK: $SRC ($COMMIT) and $PY_REAL are root-owned and not writable by others"
+    exit 0
+fi
 
 # ── 3. service user and its private home ────────────────────────────────
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
