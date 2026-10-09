@@ -196,7 +196,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     os.environ.clear()
     os.environ.update(build_child_env(home, site_config))
     # twitter-cli also reads ./config.yaml; never let the caller's cwd choose it.
-    os.chdir(home)
+    try:
+        os.chdir(home)
+    except OSError:
+        _fail("service account home %s is not accessible" % home)
 
     from .cli import cli
 

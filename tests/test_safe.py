@@ -205,6 +205,14 @@ def test_main_rejects_file_option_before_running(service_account, capsys) -> Non
     assert "disabled" in capsys.readouterr().err
 
 
+def test_main_reports_missing_home(service_account, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(safe, "service_home", lambda: service_account / "missing")
+    with pytest.raises(SystemExit) as excinfo:
+        safe.main(["whoami"])
+    assert excinfo.value.code == 2
+    assert "is not accessible" in capsys.readouterr().err
+
+
 def test_main_refuses_root(monkeypatch) -> None:
     monkeypatch.setattr(safe.os, "geteuid", lambda: 0)
     with pytest.raises(SystemExit):
