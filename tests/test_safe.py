@@ -66,6 +66,22 @@ def test_check_arguments_allows_regular_use(args) -> None:
     safe.check_arguments(cli, args)
 
 
+def test_check_arguments_rejects_file_option_with_non_empty_default() -> None:
+    import click
+
+    @click.group()
+    def group():
+        pass
+
+    @group.command()
+    @click.option("--output", "output_file", default="/tmp/always-written.json")
+    def export(output_file):
+        pass
+
+    with pytest.raises(safe.SafeError, match="disabled"):
+        safe.check_arguments(group, ["export"])
+
+
 def test_check_arguments_rejects_unknown_command() -> None:
     with pytest.raises(safe.SafeError, match="unknown command"):
         safe.check_arguments(cli, ["exec-something"])

@@ -261,7 +261,8 @@ SUDOERS_TMP=$(mktemp /tmp/twitter-safe-sudoers.XXXXXX)
 {
     echo "# Managed by twitter-safe deploy/install.sh ($COMMIT)."
     echo "# $AGENT_USER may run only twitter-safe as $SERVICE_USER, with a reset environment."
-    echo "Defaults!$PREFIX/bin/twitter-safe env_reset"
+    echo "# !requiretty: agents run without a terminal (RHEL-family sudo requires one by default)."
+    echo "Defaults!$PREFIX/bin/twitter-safe env_reset, !requiretty"
     if [ "$KEEP_SUDO_CACHE" = 0 ]; then
         echo "# A cached sudo password would let the agent run anything as root."
         echo "Defaults:$AGENT_USER timestamp_timeout=0"

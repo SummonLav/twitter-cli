@@ -150,10 +150,11 @@ def check_arguments(group: Any, args: Sequence[str]) -> None:
         except click.ClickException as exc:
             raise SafeError(exc.format_message()) from None
         for param in command.params:
-            if _forbidden(param) and ctx.get_parameter_source(param.name) not in (
-                None,
-                ParameterSource.DEFAULT,
-            ):
+            if not _forbidden(param):
+                continue
+            given = ctx.get_parameter_source(param.name) not in (None, ParameterSource.DEFAULT)
+            # A non-empty default would also make the command touch a local path.
+            if given or ctx.params.get(param.name) not in (None, (), [], ""):
                 raise SafeError(
                     "option %s is disabled: it reads or writes local files. "
                     "Read the command output instead." % "/".join(param.opts)
