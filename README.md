@@ -1,5 +1,11 @@
 # twitter-cli
 
+> **SummonLav fork.** Pinned to upstream `7c634e0` and maintained here instead of
+> pulling upstream. Browser cookie extraction is removed: credentials come only
+> from a private credentials file or explicit environment variables, and
+> `twitter-safe` runs the CLI under a separate OS account so an AI agent can use
+> it without being able to read the cookies. See [FORK.md](./FORK.md) (中文).
+
 [![CI](https://github.com/jackwener/twitter-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jackwener/twitter-cli/actions/workflows/ci.yml)
 [![PyPI version](https://badge.fury.io/py/twitter-cli.svg)](https://pypi.org/project/twitter-cli/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://pypi.org/project/twitter-cli/)
@@ -44,8 +50,8 @@ A terminal-first CLI for Twitter/X: read timelines, bookmarks, and user profiles
 - Write commands also support explicit `--json` / `--yaml` output now
 
 **Auth & Anti-Detection:**
-- Cookie auth: use browser cookies or environment variables
-- Full cookie forwarding: extracts ALL browser cookies for richer browser context
+- Cookie auth: private credentials file (`TWITTER_CREDENTIALS_FILE`) or environment variables
+- Full cookie forwarding: pass the whole x.com Cookie header (`cookie_string` / `TWITTER_COOKIE_STRING`)
 - TLS fingerprint impersonation: `curl_cffi` with dynamic Chrome version matching
 - `x-client-transaction-id` header generation
 - Request timing jitter to avoid pattern detection
@@ -54,29 +60,17 @@ A terminal-first CLI for Twitter/X: read timelines, bookmarks, and user profiles
 
 ### Installation
 
-```bash
-# Recommended: uv tool (fast, isolated)
-uv tool install twitter-cli
+Do **not** `uv tool install twitter-cli` / `pipx install twitter-cli`: that installs upstream from
+PyPI, which still reads browser cookie stores. Do not run `upgrade` either; this fork is updated by
+reviewing and committing changes here.
 
-# Alternative: pipx
-pipx install twitter-cli
-```
-
-Upgrade to the latest version:
+- For an AI agent (credentials isolated in a service account): `deploy/install.sh`, see [FORK.md](./FORK.md).
+- For development from a checkout:
 
 ```bash
-uv tool upgrade twitter-cli
-# Or: pipx upgrade twitter-cli
-```
-
-> **Tip:** Upgrade regularly to avoid unexpected errors from outdated API handling.
-
-Install from source:
-
-```bash
-git clone git@github.com:jackwener/twitter-cli.git
+git clone https://github.com/SummonLav/twitter-cli.git
 cd twitter-cli
-uv sync
+uv sync --frozen
 ```
 
 ### Quick Start
@@ -171,24 +165,17 @@ twitter follow elonmusk --json
 
 ### Authentication
 
-twitter-cli uses this auth priority:
+This fork never reads browser cookie stores. Credentials come from exactly one explicit source:
 
-1. **Environment variables**: `TWITTER_AUTH_TOKEN` + `TWITTER_CT0`
-2. **Browser cookies** (recommended): auto-extract from Arc/Chrome/Edge/Firefox/Brave
+1. **Credentials file**: `TWITTER_CREDENTIALS_FILE=/path/credentials.json`, a regular file owned by
+   you with mode `600`, containing `{"cookie_string": "auth_token=...; ct0=...; ..."}` or
+   `{"auth_token": "...", "ct0": "..."}`. When set, environment variables are ignored.
+2. **Environment variables**: `TWITTER_AUTH_TOKEN` + `TWITTER_CT0`, optionally the full header in
+   `TWITTER_COOKIE_STRING`.
 
-Browser extraction is recommended — it forwards ALL Twitter cookies (not just `auth_token` + `ct0`) and aligns request headers with your local runtime, which is closer to normal browser traffic than minimal cookie auth.
-
-**Chrome multi-profile**: All Chrome profiles are scanned automatically. To specify a profile:
-
-```bash
-TWITTER_CHROME_PROFILE="Profile 2" twitter feed
-```
-
-**Browser priority:** If you have multiple browsers, set `TWITTER_BROWSER` to try a specific browser first:
-
-```bash
-TWITTER_BROWSER=chrome twitter feed    # Supported: arc, chrome, edge, firefox, brave
-```
+Forwarding the full Cookie header (Cookie-Editor > Export > Header String) is closer to normal
+browser traffic; X may reject writes (error 226) with only `auth_token` + `ct0`.
+For agent use, prefer `twitter-safe` (see [FORK.md](./FORK.md)), which keeps the file out of the agent's reach.
 
 After loading cookies, the CLI performs lightweight verification. Commands that require account access fail fast on clear auth errors (`401/403`).
 
@@ -265,7 +252,7 @@ Mode behavior:
 - **Use a proxy** — set `TWITTER_PROXY` to avoid direct IP exposure
 - **Keep request volumes low** — use `--max 20` instead of `--max 500`
 - **Don't run too frequently** — each startup fetches x.com to initialize anti-detection headers
-- **Use browser cookie extraction** — provides full cookie fingerprint
+- **Forward the full Cookie header** — provides a fuller cookie fingerprint
 - **Avoid datacenter IPs** — residential proxies are much safer
 
 ### Output Modes
@@ -277,21 +264,11 @@ Mode behavior:
 
 ### Troubleshooting
 
-- `No Twitter cookies found`
-  - Ensure you are logged in to `x.com` in a supported browser (Arc/Chrome/Edge/Firefox/Brave).
-  - Or set `TWITTER_AUTH_TOKEN` and `TWITTER_CT0` manually.
-  - Run with `-v` to see browser extraction diagnostics.
+- `No Twitter credentials configured`
+  - Set `TWITTER_CREDENTIALS_FILE` or `TWITTER_AUTH_TOKEN` + `TWITTER_CT0` (browser extraction is disabled).
 
 - `Cookie expired or invalid (HTTP 401/403)`
-  - Re-login to `x.com` and retry.
-
-- `Unable to get key for cookie decryption` (macOS Keychain)
-  - **SSH sessions**: Keychain is locked by default over SSH. Run:
-    ```bash
-    security unlock-keychain ~/Library/Keychains/login.keychain-db
-    ```
-  - **Local terminal**: Open **Keychain Access** → search for **"\<Browser\> Safe Storage"** → **Access Control** → add your Terminal app → **Save Changes**.
-  - Or click **"Always Allow"** when the Keychain authorization popup appears.
+  - Export fresh x.com cookies and update the credentials (`twitter-safe-setup` for twitter-safe).
 
 - `Twitter API error 404`
   - This can happen when upstream GraphQL query IDs rotate.
@@ -397,8 +374,8 @@ git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
 - 写操作现在也显式支持 `--json` / `--yaml`
 
 **认证与反风控:**
-- Cookie 认证：支持环境变量和浏览器自动提取
-- 完整 Cookie 转发：提取浏览器中所有 Twitter Cookie，保留更多浏览器上下文
+- Cookie 认证：私有凭据文件（`TWITTER_CREDENTIALS_FILE`）或环境变量
+- 完整 Cookie 转发：传入 x.com 的完整 Cookie 请求头（`cookie_string` / `TWITTER_COOKIE_STRING`）
 - TLS 指纹伪装：`curl_cffi` 动态匹配 Chrome 版本
 - `x-client-transaction-id` 请求头生成
 - 请求时序随机化（jitter）
@@ -407,19 +384,11 @@ git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
 
 ### 安装
 
-```bash
-# 推荐：uv tool
-uv tool install twitter-cli
-```
+**不要** 用 `uv tool install twitter-cli` / `pipx install twitter-cli`：那会从 PyPI 装上游版本，仍会读取浏览器 Cookie。
+也不要执行 `upgrade`；本 fork 的更新方式是在这里审查并提交改动。
 
-升级到最新版本：
-
-```bash
-uv tool upgrade twitter-cli
-# 或：pipx upgrade twitter-cli
-```
-
-> **提示：** 建议定期升级，避免因版本过旧导致的 API 调用异常。
+- 给 AI Agent 用（凭据隔离在独立系统账户中）：运行 `deploy/install.sh`，见 [FORK.md](./FORK.md)。
+- 本地开发：`git clone https://github.com/SummonLav/twitter-cli.git && cd twitter-cli && uv sync --frozen`
 
 ### 使用指南
 
@@ -494,24 +463,15 @@ twitter follow elonmusk --json
 
 ### 认证说明
 
-认证优先级：
+本 fork 不会读取任何浏览器的 Cookie 库。凭据只来自一个显式来源：
 
-1. **环境变量**：`TWITTER_AUTH_TOKEN` + `TWITTER_CT0`
-2. **浏览器提取**（推荐）：Arc/Chrome/Edge/Firefox/Brave 全量 Cookie 提取
+1. **凭据文件**：`TWITTER_CREDENTIALS_FILE=/路径/credentials.json`，必须是你本人拥有、权限 `600` 的普通文件，
+   内容为 `{"cookie_string": "auth_token=...; ct0=...; ..."}` 或 `{"auth_token": "...", "ct0": "..."}`。
+   设置后忽略环境变量。
+2. **环境变量**：`TWITTER_AUTH_TOKEN` + `TWITTER_CT0`，可选用 `TWITTER_COOKIE_STRING` 传完整请求头。
 
-推荐使用浏览器提取方式，会转发所有 Twitter Cookie，并按本机运行环境生成语言和平台请求头；它比仅发送 `auth_token` + `ct0` 更接近普通浏览器流量，但不等于完整浏览器自动化。
-
-**Chrome 多 Profile 支持**：会自动遍历所有 Chrome profile。也可以通过环境变量指定：
-
-```bash
-TWITTER_CHROME_PROFILE="Profile 2" twitter feed
-```
-
-**浏览器优先级**：如果有多个浏览器，可通过 `TWITTER_BROWSER` 指定优先尝试的浏览器：
-
-```bash
-TWITTER_BROWSER=chrome twitter feed    # 支持: arc, chrome, edge, firefox, brave
-```
+传完整 Cookie 请求头（Cookie-Editor → Export → Header String）更接近正常浏览器流量；只有 `auth_token` + `ct0`
+时，发推等写操作可能被 X 以 226 错误拒绝。给 AI Agent 用时请走 `twitter-safe`，见 [FORK.md](./FORK.md)。
 
 ### 代理支持
 
@@ -551,16 +511,8 @@ score = likes_w * likes
 
 ### 常见问题
 
-- 报错 `No Twitter cookies found`：请先登录 `x.com`，并确认浏览器为 Arc/Chrome/Edge/Firefox/Brave 之一，或手动设置环境变量。
-- 如需查看浏览器提取细节，可加 `-v` 打开诊断日志。
-- 报错 `Cookie expired or invalid`：Cookie 过期，重新登录后重试。
-- 报错 `Unable to get key for cookie decryption`（macOS Keychain 问题）：
-  - **SSH 远程登录**：Keychain 默认锁定，需手动解锁：
-    ```bash
-    security unlock-keychain ~/Library/Keychains/login.keychain-db
-    ```
-  - **本地终端**：打开 **钥匙串访问** → 搜索 **"\<浏览器\> Safe Storage"** → **访问控制** → 添加你的终端 app → **保存更改**。
-  - 或在弹出 Keychain 授权时点击 **"始终允许"**。
+- 报错 `No Twitter credentials configured`：设置 `TWITTER_CREDENTIALS_FILE` 或 `TWITTER_AUTH_TOKEN` + `TWITTER_CT0`（浏览器提取已禁用）。
+- 报错 `Cookie expired or invalid`：Cookie 过期，重新导出后更新凭据（twitter-safe 用 `twitter-safe-setup`）。
 - 报错 `Twitter API error 404`：通常是 queryId 轮换，重试即可。
 
 - **Windows 下 pipe/subprocess 无法捕获输出**（AI agent 集成场景）
@@ -578,7 +530,7 @@ score = likes_w * likes
 - **使用代理** — 设置 `TWITTER_PROXY`，避免裸 IP 直连
 - **控制请求量** — 用 `--max 20` 而不是 `--max 500`
 - **避免频繁启动** — 每次启动都会访问 x.com 初始化反检测请求头
-- **使用浏览器 Cookie 提取** — 提供完整 Cookie 指纹
+- **传入完整 Cookie 请求头** — 提供更完整的 Cookie 指纹
 - **避免数据中心 IP** — 住宅代理更安全
 - Cookie 仅在本地使用，不会被本工具上传
 
