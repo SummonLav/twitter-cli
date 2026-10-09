@@ -123,7 +123,7 @@ sudo /opt/twitter-safe-src/deploy/install.sh --agent-user "$USER"   # 重新安�
 
 ## 验证情况
 已在 Linux 容器（Ubuntu，Python 3.13）中验证：
-- 316 个单元测试通过，ruff 和 mypy 检查通过；
+- 317 个单元测试通过，ruff 和 mypy 检查通过；
 - 带哈希的依赖能以只装 wheel 的方式安装，项目能离线构建；
 - `install.sh --check` 在 5 种情况下的结果符合预期：干净的 root 克隆通过；文件归其他用户、文件组可写、Python 不归 root、缺少参数，都被拒绝；
 - 生成的 sudoers 规则通过 `visudo -cf` 语法检查；
