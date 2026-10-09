@@ -99,9 +99,12 @@ sudo /opt/twitter-safe-src/deploy/install.sh --agent-user "$USER"   # 重新安�
 ```
 
 - **依赖有变化**：修改 `pyproject.toml`，运行 `uv lock` 和 `deploy/update-locks.sh`，审查哈希的 diff 后再提交。
+- **只合进本仓库，不推上游**：改动都合进 `SummonLav/twitter-cli` 的 `main`。在 GitHub 网页上对 fork 点
+  「Compare & pull request」时，默认目标是上游仓库，要手动把 base repository 改成 `SummonLav/twitter-cli`。
 - **借鉴上游修复**：
   ```bash
   git remote add upstream https://github.com/public-clis/twitter-cli
+  git remote set-url --push upstream DISABLED   # 只拉取，推送到 upstream 会直接失败
   git fetch upstream
   git log 7c634e0..upstream/main
   ```
