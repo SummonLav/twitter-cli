@@ -38,6 +38,7 @@ from .exceptions import (
     MediaUploadError,
     NotFoundError,
     TwitterAPIError,
+    TwitterError,
 )
 from .graphql import (
     FALLBACK_QUERY_IDS,
@@ -65,6 +66,29 @@ logger = logging.getLogger(__name__)
 
 # Shared curl_cffi session (single-threaded CLI)
 _cffi_session = None
+
+# The only origins allowed to receive the account Cookie header (SummonLav
+# fork, see FORK.md). Anything else is a bug and must fail closed.
+_COOKIE_HOSTS = frozenset({"x.com", "api.x.com", "upload.twitter.com"})
+
+
+def _assert_cookie_host(url):
+    # type: (str) -> None
+    """Refuse to build authenticated headers for anything but HTTPS X endpoints."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        raise TwitterError("Refusing to send account cookies to a malformed URL") from None
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or host not in _COOKIE_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise TwitterError("Refusing to send account cookies to %r" % (host or url[:80]))
 
 TimelineInstructionGetter = Callable[[Any], Any]
 
@@ -1130,6 +1154,7 @@ class TwitterClient:
     def _build_headers(self, url="", method="GET"):
         # type: (str, str) -> Dict[str, str]
         """Build shared headers for authenticated API calls."""
+        _assert_cookie_host(url)
         headers = {
             "Authorization": "Bearer %s" % BEARER_TOKEN,
             "Cookie": self._cookie_string or "auth_token=%s; ct0=%s" % (self._auth_token, self._ct0),
