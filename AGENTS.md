@@ -7,7 +7,7 @@ This file provides context for AI agents working in this repository.
 - **Project**: twitter-cli — A CLI for Twitter/X (read timelines, bookmarks, search, post, reply, etc.)
 - **Language**: Python 3.10+
 - **Package Manager**: uv (recommended) / pip
-- **Repository**: https://github.com/jackwener/twitter-cli
+- **Repository**: https://github.com/SummonLav/twitter-cli (fork of jackwener/twitter-cli at 7c634e0; see FORK.md)
 
 ## Build, Lint, and Test Commands
 
@@ -48,7 +48,8 @@ uv run pytest -k "test_parse" -v
 twitter_cli/
 ├── cli.py               # Click CLI entry point
 ├── client.py            # Twitter API client (HTTP)
-├── auth.py              # Cookie extraction & auth
+├── auth.py              # Credentials from a private file or env (no browser extraction)
+├── safe.py              # twitter-safe / twitter-safe-setup (service-account wrapper)
 ├── graphql.py           # GraphQL query IDs
 ├── parser.py            # Tweet/User parsing
 ├── models.py            # Dataclass models
@@ -63,6 +64,20 @@ twitter_cli/
 ├── search.py            # Search utilities
 └── timeutil.py          # Time utilities
 ```
+
+## Fork Security Invariants
+
+Changes must keep these true (tests enforce them):
+
+- `auth.py` never reads browser cookie stores and never spawns subprocesses; a rejected cookie is an
+  error, not a trigger to look for another one.
+- The account Cookie header is only built for `_COOKIE_HOSTS` in `client.py` (HTTPS X endpoints).
+- Any new option that takes a local path must be named `*_file`/`*_path`/`*_dir` (or use
+  `click.Path`/`click.File`) so `safe.check_arguments` refuses it; see `tests/test_safe.py`.
+- Never print credential values in messages, logs or exceptions.
+- Dependency changes: edit `pyproject.toml`, run `uv lock`, then `deploy/update-locks.sh`, and review the
+  hash diff. Never point docs or scripts at `uv tool install twitter-cli` / `pipx install twitter-cli`
+  (that is upstream from PyPI).
 
 ## CI
 

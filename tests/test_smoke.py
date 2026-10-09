@@ -1,7 +1,7 @@
 """Integration smoke tests for twitter-cli.
 
 These tests invoke the real CLI commands with ``--yaml`` against the live
-Twitter/X API using your local browser cookies.  They are **skipped by
+Twitter/X API using your configured credentials.  They are **skipped by
 default** and only run when explicitly requested::
 
     uv run pytest -m smoke -v

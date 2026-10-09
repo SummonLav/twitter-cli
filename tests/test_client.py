@@ -16,7 +16,7 @@ from twitter_cli.client import (
     _best_chrome_target,
     TwitterClient,
 )
-from twitter_cli.exceptions import TwitterAPIError
+from twitter_cli.exceptions import TwitterAPIError, TwitterError
 from twitter_cli.graphql import (
     FEATURES,
     FALLBACK_QUERY_IDS,
@@ -323,13 +323,53 @@ class TestBuildHeaders:
         client._client_transaction = None
         client._ct_init_attempted = True
 
-        headers = client._build_headers()
+        headers = client._build_headers("https://x.com/i/api/graphql/test")
         assert headers["Cookie"] == "auth_token=x; ct0=y; other=z"
         assert headers["X-Twitter-Client-Language"] == "zh"
         assert headers["Accept-Language"] == "zh-CN,zh;q=0.9,en;q=0.8"
         assert headers["sec-ch-ua-platform"] == '"Linux"'
         assert headers["sec-ch-ua-arch"] == '"x86"'
         assert headers["sec-ch-ua-platform-version"] == '""'
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "https://raw.githubusercontent.com/fa0311/x.json",
+            "https://x.com.evil.example/i/api",
+            "https://evil.example/?https://x.com/",
+            "https://user@x.com/i/api",
+            "http://x.com/i/api",
+            "https://x.com:8443/i/api",
+            "https://abs.twimg.com/responsive-web/client-web/ondemand.s.js",
+        ],
+    )
+    def test_cookie_never_built_for_non_x_hosts(self, url):
+        client = TwitterClient.__new__(TwitterClient)
+        client._auth_token = "token"
+        client._ct0 = "ct0"
+        client._cookie_string = None
+        client._client_transaction = None
+
+        with pytest.raises(TwitterError, match="Refusing to send account cookies"):
+            client._build_headers(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://x.com/i/api/graphql/abc/HomeTimeline",
+            "https://api.x.com/1.1/account/verify_credentials.json",
+            "https://upload.twitter.com/i/media/upload.json",
+        ],
+    )
+    def test_cookie_built_for_x_hosts(self, url):
+        client = TwitterClient.__new__(TwitterClient)
+        client._auth_token = "token"
+        client._ct0 = "ct0"
+        client._cookie_string = None
+        client._client_transaction = None
+
+        assert client._build_headers(url)["Cookie"] == "auth_token=token; ct0=ct0"
 
 
 class TestPaginationBehavior:

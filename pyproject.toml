@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "twitter-cli"
-version = "0.8.6"
+version = "0.8.6+summonlav.1"
 description = "A CLI for Twitter/X — feed, bookmarks, and user timeline in terminal"
 readme = "README.md"
 license = "Apache-2.0"
@@ -20,7 +20,6 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "browser-cookie3>=0.19",
     "click>=8.0",
     "rich>=13.0",
     "PyYAML>=6.0",
@@ -44,6 +43,8 @@ Issues = "https://github.com/jackwener/twitter-cli/issues"
 
 [project.scripts]
 twitter = "twitter_cli.cli:cli"
+twitter-safe = "twitter_cli.safe:main"
+twitter-safe-setup = "twitter_cli.safe:setup_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
