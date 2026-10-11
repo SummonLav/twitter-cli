@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 from __future__ import annotations
 
 import inspect
@@ -256,7 +257,8 @@ def test_verify_cookies_logs_attempt_summary_on_non_auth_failures(monkeypatch, c
         def __init__(self) -> None:
             self.calls = 0
 
-        def get(self, url, headers=None, timeout=5):
+        def get(self, url, headers=None, timeout=5, allow_redirects=True):
+            assert allow_redirects is False
             self.calls += 1
             if self.calls == 1:
                 return Response(404)
@@ -269,7 +271,7 @@ def test_verify_cookies_logs_attempt_summary_on_non_auth_failures(monkeypatch, c
 
     assert result == {}
     assert "verify_credentials.json=404" in caplog.text
-    assert "settings.json=Exception" in caplog.text
+    assert "settings.json=NetworkError" in caplog.text
 
 
 def test_verify_cookies_raises_on_401(monkeypatch) -> None:
@@ -277,7 +279,8 @@ def test_verify_cookies_raises_on_401(monkeypatch) -> None:
         status_code = 401
 
     class Session:
-        def get(self, url, headers=None, timeout=5):
+        def get(self, url, headers=None, timeout=5, allow_redirects=True):
+            assert allow_redirects is False
             return Response()
 
     monkeypatch.setattr("twitter_cli.client._get_cffi_session", lambda: Session())
@@ -285,3 +288,65 @@ def test_verify_cookies_raises_on_401(monkeypatch) -> None:
     with pytest.raises(AuthenticationError) as excinfo:
         auth.verify_cookies(TOKEN, CSRF)
     assert TOKEN not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("status_code", [300, 301, 302, 303, 304, 307, 308, 399])
+def test_verify_cookies_rejects_redirect_without_fallback_or_secret_output(
+    monkeypatch, caplog, status_code,
+) -> None:
+    calls = []
+
+    class Response:
+        def __init__(self):
+            self.status_code = status_code
+
+        @property
+        def headers(self):
+            pytest.fail("A rejected redirect must not inspect its headers")
+
+        @property
+        def text(self):
+            pytest.fail("A rejected redirect must not inspect its body")
+
+        def json(self):
+            pytest.fail("A rejected redirect must not be treated as a verification response")
+
+    class Session:
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    monkeypatch.setattr("twitter_cli.client._get_cffi_session", lambda: Session())
+
+    with caplog.at_level("DEBUG"), pytest.raises(AuthenticationError, match="Refusing redirect") as exc:
+        auth.verify_cookies(TOKEN, CSRF)
+
+    assert len(calls) == 1
+    assert calls[0][1]["allow_redirects"] is False
+    assert TOKEN not in str(exc.value) + caplog.text
+    assert CSRF not in str(exc.value) + caplog.text
+
+
+def test_verify_network_failures_keep_fallback_without_logging_secrets(monkeypatch, caplog):
+    from curl_cffi.requests.exceptions import ProxyError
+
+    calls = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            raise ProxyError(
+                "Proxy http://private-user:private-password@127.0.0.1%%00:1 "
+                "Cookie: auth_token=%s; ct0=%s" % (TOKEN, CSRF),
+                code=5,
+            )
+
+    monkeypatch.setattr("twitter_cli.client._get_cffi_session", lambda: Session())
+
+    with caplog.at_level("DEBUG"):
+        assert auth.verify_cookies(TOKEN, CSRF) == {}
+
+    assert len(calls) == 2
+    assert "ProxyError, curl code 5" in caplog.text
+    for secret in (TOKEN, CSRF, "private-user", "private-password"):
+        assert secret not in caplog.text

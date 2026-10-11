@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 """Twitter GraphQL API client."""
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from .constants import (
 )
 from .exceptions import (
     MediaUploadError,
+    NetworkError,
     NotFoundError,
     TwitterAPIError,
     TwitterError,
@@ -90,6 +92,32 @@ def _assert_cookie_host(url):
     ):
         raise TwitterError("Refusing to send account cookies to %r" % (host or url[:80]))
 
+
+def _reject_authenticated_redirect(status_code: int) -> None:
+    """Never forward credential headers or write bodies to a redirect target."""
+    if 300 <= status_code < 400:
+        raise TwitterAPIError(
+            status_code,
+            "Refusing redirect for an authenticated request; no redirect was followed",
+        )
+
+
+def _safe_transport_request(session: Any, method: str, url: str, **kwargs: Any) -> Any:
+    """Keep transport diagnostics without echoing proxy URLs or request secrets.
+
+    curl errors can embed credentials from explicit or inherited proxy settings.
+    HTTP response handling stays with the caller, after the transport succeeds.
+    """
+    try:
+        return getattr(session, method)(url, **kwargs)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        detail = type(exc).__name__
+        if isinstance(code, int):
+            detail += ", curl code %d" % code
+        raise NetworkError("Network request failed (%s)" % detail) from None
+
+
 TimelineInstructionGetter = Callable[[Any], Any]
 
 # Hard ceiling to prevent accidental massive fetches
@@ -127,12 +155,33 @@ def _best_chrome_target():
     return chrome_targets[0] if chrome_targets else "chrome131"
 
 
+def _validate_proxy_url(proxy: str) -> None:
+    """Reject malformed proxies before curl can include their credentials in errors."""
+    try:
+        parsed = urllib.parse.urlsplit(proxy)
+        valid = (
+            not any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in proxy)
+            and parsed.scheme in {"http", "https", "socks5", "socks5h"}
+            and bool(parsed.hostname)
+            and (parsed.port is None or 1 <= parsed.port <= 65535)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise TwitterError(
+            "Invalid TWITTER_PROXY configuration; use an HTTP, HTTPS, SOCKS5 or SOCKS5H "
+            "URL with a valid host and port"
+        ) from None
+
+
 def _get_cffi_session():
     # type: () -> Any
     """Return shared curl_cffi session with Chrome impersonation and optional proxy."""
     global _cffi_session
     if _cffi_session is None:
         proxy = os.environ.get("TWITTER_PROXY", "")
+        if proxy:
+            _validate_proxy_url(proxy)
         target = _best_chrome_target()
         sync_chrome_version(target)  # align UA/sec-ch-ua with impersonate target
         _cffi_session = _cffi_requests.Session(
@@ -141,7 +190,7 @@ def _get_cffi_session():
         )
         logger.info("curl_cffi impersonating %s", target)
         if proxy:
-            logger.info("Using proxy: %s", proxy[:20] + "...")
+            logger.info("Using configured proxy")
     return _cffi_session
 
 
@@ -149,7 +198,7 @@ def _url_fetch(url, headers=None):
     # type: (str, Optional[Dict[str, str]]) -> str
     """URL fetch using curl_cffi for proper TLS fingerprint."""
     session = _get_cffi_session()
-    resp = session.get(url, headers=headers or {}, timeout=30)
+    resp = _safe_transport_request(session, "get", url, headers=headers or {}, timeout=30)
     resp.raise_for_status()
     return resp.text
 
@@ -539,7 +588,11 @@ class TwitterClient:
             "total_bytes": str(file_size),
             "media_type": media_type,
         }
-        resp = session.post(upload_url, headers=headers, data=init_data, timeout=30)
+        resp = _safe_transport_request(
+            session, "post", upload_url, headers=headers, data=init_data,
+            timeout=30, allow_redirects=False,
+        )
+        _reject_authenticated_redirect(resp.status_code)
         if resp.status_code >= 400:
             raise MediaUploadError("INIT failed (HTTP %d): %s" % (resp.status_code, resp.text[:300]))
         try:
@@ -564,7 +617,11 @@ class TwitterClient:
             "segment_index": "0",
             "media_data": media_data,
         }
-        resp = session.post(upload_url, headers=headers, data=append_data, timeout=60)
+        resp = _safe_transport_request(
+            session, "post", upload_url, headers=headers, data=append_data,
+            timeout=60, allow_redirects=False,
+        )
+        _reject_authenticated_redirect(resp.status_code)
         if resp.status_code >= 400:
             raise MediaUploadError("APPEND failed (HTTP %d): %s" % (resp.status_code, resp.text[:300]))
         logger.info("Media APPEND: segment 0 uploaded")
@@ -576,7 +633,11 @@ class TwitterClient:
             "command": "FINALIZE",
             "media_id": media_id,
         }
-        resp = session.post(upload_url, headers=headers, data=finalize_data, timeout=30)
+        resp = _safe_transport_request(
+            session, "post", upload_url, headers=headers, data=finalize_data,
+            timeout=30, allow_redirects=False,
+        )
+        _reject_authenticated_redirect(resp.status_code)
         if resp.status_code >= 400:
             raise MediaUploadError("FINALIZE failed (HTTP %d): %s" % (resp.status_code, resp.text[:300]))
         logger.info("Media FINALIZE: media_id=%s ready", media_id)
@@ -751,7 +812,10 @@ class TwitterClient:
         headers = self._build_headers(url=url, method="POST")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         session = _get_cffi_session()
-        response = session.post(url, headers=headers, data=body, timeout=30)
+        response = _safe_transport_request(
+            session, "post", url, headers=headers, data=body, timeout=30, allow_redirects=False,
+        )
+        _reject_authenticated_redirect(response.status_code)
         if response.status_code >= 400:
             raise TwitterAPIError(response.status_code, "Failed to follow user")
         self._write_delay()
@@ -765,7 +829,10 @@ class TwitterClient:
         headers = self._build_headers(url=url, method="POST")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         session = _get_cffi_session()
-        response = session.post(url, headers=headers, data=body, timeout=30)
+        response = _safe_transport_request(
+            session, "post", url, headers=headers, data=body, timeout=30, allow_redirects=False,
+        )
+        _reject_authenticated_redirect(response.status_code)
         if response.status_code >= 400:
             raise TwitterAPIError(response.status_code, "Failed to unfollow user")
         self._write_delay()
@@ -984,13 +1051,17 @@ class TwitterClient:
         for attempt in range(self._max_retries + 1):
             try:
                 if method == "POST":
-                    response = session.post(
-                        url, headers=headers, json=json_body, timeout=30,
+                    response = _safe_transport_request(
+                        session, "post", url, headers=headers, json=json_body, timeout=30,
+                        allow_redirects=False,
                     )
                 else:
-                    response = session.get(url, headers=headers, timeout=30)
+                    response = _safe_transport_request(
+                        session, "get", url, headers=headers, timeout=30, allow_redirects=False,
+                    )
 
                 status_code = response.status_code
+                _reject_authenticated_redirect(status_code)
                 if status_code == 429 and attempt < self._max_retries:
                     wait = self._retry_base_delay * (2 ** attempt) + random.uniform(0, 2)
                     logger.warning(
@@ -1127,15 +1198,15 @@ class TwitterClient:
             # a different TLS fingerprint on the same IP — a detection vector.
             cffi_session = _get_cffi_session()
             ct_headers = _gen_ct_headers()
-            home_page = cffi_session.get(
-                "https://x.com", headers=ct_headers, timeout=10,
+            home_page = _safe_transport_request(
+                cffi_session, "get", "https://x.com", headers=ct_headers, timeout=10,
             )
             home_page_response = bs4.BeautifulSoup(home_page.content, "html.parser")
             ondemand_url = get_ondemand_file_url(response=home_page_response)
             if not ondemand_url:
                 raise ValueError("Failed to extract ondemand file URL from homepage")
-            ondemand_file = cffi_session.get(
-                ondemand_url, headers=ct_headers, timeout=10,
+            ondemand_file = _safe_transport_request(
+                cffi_session, "get", ondemand_url, headers=ct_headers, timeout=10,
             )
             self._client_transaction = ClientTransaction(
                 home_page_response=home_page_response,

@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 from __future__ import annotations
 
 import json
@@ -10,6 +11,28 @@ import pytest
 from twitter_cli.models import Author, Metrics, Tweet
 
 os.environ.setdefault("OUTPUT", "rich")
+
+
+@pytest.fixture(autouse=True)
+def isolated_unit_state(request, monkeypatch, tmp_path):
+    """Unit tests must not use real credentials or overwrite the user's caches."""
+    if request.node.get_closest_marker("smoke"):
+        return
+
+    from twitter_cli import cache
+    from twitter_cli.client import TwitterClient
+
+    for name in (
+        "TWITTER_AUTH_TOKEN", "TWITTER_CT0", "TWITTER_COOKIE_STRING",
+        "TWITTER_CREDENTIALS_FILE", "TWITTER_PROXY",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path / "tweet-cache")
+    monkeypatch.setattr(cache, "_CACHE_FILE", tmp_path / "tweet-cache" / "last_results.json")
+    monkeypatch.setattr(
+        TwitterClient, "_ct_cache_path", staticmethod(lambda: str(tmp_path / "ct-cache.json")),
+    )
 
 
 @pytest.fixture()

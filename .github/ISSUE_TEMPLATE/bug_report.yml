@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 name: Bug Report
 description: Report a bug or unexpected behavior
 labels: ["bug"]
@@ -6,8 +7,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: "Run `twitter --version` or `pip show twitter-cli | grep Version`"
-      placeholder: "e.g. 0.6.0"
+      description: "Run `/opt/twitter-safe/bin/tw --version` or `twitter --version`"
+      placeholder: "e.g. 0.8.6+summonlav.1"
     validations:
       required: true
   - type: dropdown
@@ -22,16 +23,15 @@ body:
     validations:
       required: true
   - type: dropdown
-    id: browser
+    id: authentication
     attributes:
-      label: Browser (for cookie extraction)
+      label: Authentication method
+      description: "This fork does not extract browser cookies. Select the source only; never include credential values."
       options:
-        - Arc
-        - Chrome
-        - Edge
-        - Firefox
-        - Brave
-        - Other / N/A (using env vars)
+        - twitter-safe service account
+        - Private credentials file (TWITTER_CREDENTIALS_FILE)
+        - Explicit environment variables
+        - No credentials configured / Other
     validations:
       required: true
   - type: dropdown
@@ -64,17 +64,17 @@ body:
     id: reproduce
     attributes:
       label: Steps to reproduce
-      description: "Commands or steps to reproduce the issue. Use `twitter -v <command>` for debug output."
+      description: "Commands or steps to reproduce the issue. Replace credentials, authenticated proxy URLs and private content with placeholders."
       render: bash
   - type: textarea
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: "Paste the output of `twitter -v <command>` here. This helps us diagnose cookie and auth issues quickly."
+      description: "Run `/opt/twitter-safe/bin/tw -v <command>` or `twitter -v <command>`. Review and redact the output before posting; never include Cookie headers, auth_token, ct0, proxy passwords or credentials-file contents."
       render: text
   - type: textarea
     id: logs
     attributes:
       label: Error output / logs
-      description: Paste any error messages or verbose output here.
+      description: "Paste only relevant, redacted errors. Remove credentials, proxy passwords, private posts, usernames and local paths you do not want public. Do not attach credential files."
       render: text

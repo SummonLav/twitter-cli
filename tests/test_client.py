@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 """Unit tests for core client.py functions.
 
 Tests the parsing, header building, media extraction, Chrome target detection,
@@ -7,16 +8,18 @@ and feature flag update logic — all without requiring network access.
 from __future__ import annotations
 
 import copy
+import traceback
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
+from twitter_cli import client as client_module
 from twitter_cli.client import (
     _best_chrome_target,
     TwitterClient,
 )
-from twitter_cli.exceptions import TwitterAPIError, TwitterError
+from twitter_cli.exceptions import NetworkError, TwitterAPIError, TwitterError
 from twitter_cli.graphql import (
     FEATURES,
     FALLBACK_QUERY_IDS,
@@ -35,6 +38,241 @@ from twitter_cli.parser import (
     parse_tweet_result,
     parse_user_result,
 )
+
+
+@pytest.fixture
+def security_client():
+    with patch.object(TwitterClient, "_ensure_client_transaction"):
+        return TwitterClient("dummy-auth-token", "dummy-csrf")
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "http://u:pw@proxy.example:8080",
+        "socks5://user:p%40ssword@proxy.example:1080",
+        "socks5h://user:p%40ssword@proxy.example:1080",
+        "http://u:pw@[::1]:8080",
+        "https://u:pw@proxy.example:8443/optional-path",
+    ],
+)
+def test_proxy_configuration_never_appears_in_logs(monkeypatch, caplog, proxy):
+    monkeypatch.setenv("TWITTER_PROXY", proxy)
+    monkeypatch.setattr(client_module, "_cffi_session", None)
+    monkeypatch.setattr(client_module, "_best_chrome_target", lambda: "chrome133a")
+    session_factory = MagicMock()
+    monkeypatch.setattr(client_module._cffi_requests, "Session", session_factory)
+
+    with caplog.at_level("INFO"):
+        client_module._get_cffi_session()
+
+    assert "Using configured proxy" in caplog.text
+    assert proxy not in caplog.text
+    assert "u:pw" not in caplog.text
+    assert "p%40ssword" not in caplog.text
+    assert session_factory.call_args.kwargs["proxies"] == {"https": proxy, "http": proxy}
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "http://u:pw@proxy.example:invalid",
+        "http://u:pw@proxy.example:70000",
+        "http://u:pw@proxy.example:0",
+        "http://u:pw@[invalid-ipv6]",
+        "http://u:pw@",
+        "unsupported://u:pw@proxy.example:8080",
+        "http://u:pw@proxy.example\n",
+        "malformed-proxy-with-private-credentials",
+    ],
+)
+def test_invalid_proxy_is_rejected_before_curl_can_echo_credentials(monkeypatch, caplog, proxy):
+    monkeypatch.setenv("TWITTER_PROXY", proxy)
+    monkeypatch.setattr(client_module, "_cffi_session", None)
+    session_factory = MagicMock()
+    monkeypatch.setattr(client_module._cffi_requests, "Session", session_factory)
+
+    with caplog.at_level("DEBUG"), pytest.raises(TwitterError, match="Invalid TWITTER_PROXY") as exc:
+        client_module._get_cffi_session()
+
+    session_factory.assert_not_called()
+    assert proxy not in str(exc.value) + caplog.text
+    assert "u:pw" not in str(exc.value) + caplog.text
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+
+
+class RedirectResponse:
+    """Sensitive redirect metadata must never be inspected for an error message."""
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+    @property
+    def headers(self):
+        pytest.fail("A rejected redirect must not inspect its headers")
+
+    @property
+    def text(self):
+        pytest.fail("A rejected redirect must not inspect its body")
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("status_code", [300, 301, 302, 303, 304, 307, 308, 399])
+def test_authenticated_api_rejects_redirects_without_retry_or_secret_output(
+    monkeypatch, caplog, security_client, method, status_code,
+):
+    session = MagicMock()
+    request = session.get if method == "GET" else session.post
+    request.return_value = RedirectResponse(status_code)
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+
+    with caplog.at_level("DEBUG"), pytest.raises(TwitterAPIError, match="Refusing redirect") as exc:
+        security_client._api_request(
+            "https://x.com/i/api/graphql/dummy/Test", method=method,
+            body={"tweet_text": "unpublished-private-text"} if method == "POST" else None,
+        )
+
+    request.assert_called_once()
+    assert request.call_args.kwargs["allow_redirects"] is False
+    assert exc.value.status_code == status_code
+    for secret in ("dummy-auth-token", "dummy-csrf", "unpublished-private-text"):
+        assert secret not in str(exc.value) + caplog.text
+
+
+@pytest.mark.parametrize("action", ["follow_user", "unfollow_user"])
+def test_follow_actions_reject_redirects(monkeypatch, security_client, action):
+    session = MagicMock()
+    session.post.return_value = RedirectResponse(307)
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+    delay = MagicMock()
+    monkeypatch.setattr(security_client, "_write_delay", delay)
+
+    with pytest.raises(TwitterAPIError, match="Refusing redirect"):
+        getattr(security_client, action)("12345")
+
+    session.post.assert_called_once()
+    assert session.post.call_args.kwargs["allow_redirects"] is False
+    delay.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", [0, 1, 2], ids=["INIT", "APPEND", "FINALIZE"])
+def test_media_upload_rejects_redirect_at_each_phase(
+    monkeypatch, tmp_path, security_client, phase,
+):
+    image = tmp_path / "image.jpg"
+    image.write_bytes(b"dummy-image")
+    success = MagicMock(status_code=200, text='{"media_id_string":"12345"}')
+    session = MagicMock()
+    session.post.side_effect = [success] * phase + [RedirectResponse(308)]
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+
+    with pytest.raises(TwitterAPIError, match="Refusing redirect"):
+        security_client.upload_media(str(image))
+
+    assert session.post.call_count == phase + 1
+    assert all(call.kwargs["allow_redirects"] is False for call in session.post.call_args_list)
+
+
+def test_public_discovery_fetch_keeps_session_redirect_policy(monkeypatch):
+    session = MagicMock()
+    session.get.return_value.text = "public-discovery-result"
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+
+    assert client_module._url_fetch("https://x.com") == "public-discovery-result"
+
+    assert "allow_redirects" not in session.get.call_args.kwargs
+    assert session.get.call_args.kwargs["headers"] == {}
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["api_get", "api_post", "follow", "unfollow", "upload", "discovery", "ct_home", "ct_js"],
+)
+def test_transport_errors_never_echo_proxy_or_account_secrets(
+    monkeypatch, tmp_path, caplog, security_client, operation,
+):
+    from curl_cffi.requests.exceptions import ProxyError
+
+    secrets = ["proxy-user", "proxy-password", "dummy-auth-token", "dummy-csrf"]
+    failure = ProxyError(
+        "Invalid proxy http://proxy-user:proxy-password@127.0.0.1%00:1 "
+        "request Cookie: auth_token=dummy-auth-token; ct0=dummy-csrf",
+        code=5,
+    )
+    session = MagicMock()
+    session.get.side_effect = failure
+    session.post.side_effect = failure
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+    image = tmp_path / "image.jpg"
+    image.write_bytes(b"dummy-image")
+    actions = {
+        "api_get": lambda: security_client._api_request("https://x.com/i/api/graphql/dummy/Test"),
+        "api_post": lambda: security_client._api_request(
+            "https://x.com/i/api/graphql/dummy/Test", method="POST", body={"text": "draft"},
+        ),
+        "follow": lambda: security_client.follow_user("12345"),
+        "unfollow": lambda: security_client.unfollow_user("12345"),
+        "upload": lambda: security_client.upload_media(str(image)),
+        "discovery": lambda: client_module._url_fetch("https://x.com"),
+        "ct_home": security_client._ensure_client_transaction,
+        "ct_js": security_client._ensure_client_transaction,
+    }
+    monkeypatch.setattr(security_client, "_load_ct_cache", lambda: False)
+    if operation == "ct_js":
+        session.get.side_effect = [MagicMock(content=b"<html></html>"), failure]
+        monkeypatch.setattr(
+            client_module, "get_ondemand_file_url",
+            lambda **kwargs: "https://abs.twimg.com/public.js",
+        )
+
+    with caplog.at_level("DEBUG"):
+        if operation.startswith("ct_"):
+            actions[operation]()
+            rendered = caplog.text
+        else:
+            with pytest.raises((TwitterAPIError, NetworkError)) as exc:
+                actions[operation]()
+            rendered = "".join(traceback.format_exception(exc.value)) + caplog.text
+
+    assert "ProxyError, curl code 5" in rendered
+    for secret in secrets:
+        assert secret not in rendered
+
+
+@pytest.mark.parametrize("proxy_variable", ["TWITTER_PROXY", "HTTPS_PROXY"])
+def test_transport_redaction_covers_explicit_and_inherited_proxy_errors(
+    monkeypatch, caplog, proxy_variable,
+):
+    from curl_cffi.requests.exceptions import ProxyError
+
+    proxy = "http://private-user:private-password@127.0.0.1%00:1"
+    monkeypatch.delenv("TWITTER_PROXY", raising=False)
+    monkeypatch.setenv(proxy_variable, proxy)
+    monkeypatch.setattr(client_module, "_cffi_session", None)
+    session = MagicMock()
+    session.get.side_effect = ProxyError("Unsupported proxy syntax in '%s'" % proxy, code=5)
+    monkeypatch.setattr(client_module._cffi_requests, "Session", lambda **kwargs: session)
+
+    with caplog.at_level("DEBUG"), pytest.raises(NetworkError) as exc:
+        client_module._url_fetch("https://x.com")
+
+    rendered = "".join(traceback.format_exception(exc.value)) + caplog.text
+    assert "private-user" not in rendered
+    assert "private-password" not in rendered
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+
+
+def test_http_error_response_diagnostics_are_preserved(monkeypatch, security_client):
+    session = MagicMock()
+    session.get.return_value = MagicMock(status_code=403, text="Account is suspended")
+    monkeypatch.setattr(client_module, "_get_cffi_session", lambda: session)
+
+    with pytest.raises(TwitterAPIError, match="Account is suspended") as exc:
+        security_client._api_request("https://x.com/i/api/graphql/dummy/Test")
+
+    assert exc.value.status_code == 403
 
 
 # ── _deep_get ────────────────────────────────────────────────────────────
