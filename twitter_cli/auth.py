@@ -1,3 +1,4 @@
+# Modified in the SummonLav fork; see FORK.md.
 """Cookie authentication for Twitter/X.
 
 Credentials come only from an explicit source, checked in this order:
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .constants import BEARER_TOKEN, get_user_agent
-from .exceptions import AuthenticationError
+from .exceptions import AuthenticationError, NetworkError
 
 logger = logging.getLogger(__name__)
 
@@ -224,10 +225,10 @@ def verify_cookies(auth_token: str, ct0: str, cookie_string: Optional[str] = Non
     """Verify cookies by calling a Twitter API endpoint.
 
     Uses curl_cffi for proper TLS fingerprint.
-    Tries multiple endpoints. Only raises on clear auth failures (401/403).
+    Tries multiple endpoints. Rejects redirects and clear auth failures (401/403).
     For other errors (404, network), returns empty dict (proceed without verification).
     """
-    from .client import _get_cffi_session
+    from .client import _get_cffi_session, _safe_transport_request
 
     urls = [
         "https://api.x.com/1.1/account/verify_credentials.json",
@@ -258,7 +259,14 @@ def verify_cookies(auth_token: str, ct0: str, cookie_string: Optional[str] = Non
     for url in urls:
         endpoint = url.split("/")[-1]
         try:
-            resp = session.get(url, headers=headers, timeout=5)
+            resp = _safe_transport_request(
+                session, "get", url, headers=headers, timeout=5, allow_redirects=False,
+            )
+            if 300 <= resp.status_code < 400:
+                raise AuthenticationError(
+                    "Refusing redirect (HTTP %d) while verifying credentials; "
+                    "no redirect was followed" % resp.status_code
+                )
             if resp.status_code in (401, 403):
                 raise AuthenticationError(
                     "Cookie expired or invalid (HTTP %d). Export fresh x.com cookies and "
@@ -272,11 +280,15 @@ def verify_cookies(auth_token: str, ct0: str, cookie_string: Optional[str] = Non
             attempts.append("%s=%d" % (endpoint, resp.status_code))
             logger.debug("Verification endpoint %s returned HTTP %d, trying next...", url, resp.status_code)
             continue
+        except NetworkError as exc:
+            attempts.append("%s=%s" % (endpoint, type(exc).__name__))
+            logger.debug("Verification endpoint %s failed: %s", url, exc)
+            continue
         except RuntimeError:
             raise
         except Exception as e:
             attempts.append("%s=%s" % (endpoint, type(e).__name__))
-            logger.debug("Verification endpoint %s failed: %s", url, e)
+            logger.debug("Verification endpoint %s failed: %s", url, type(e).__name__)
             continue
 
     # All endpoints failed with non-auth errors — proceed without verification

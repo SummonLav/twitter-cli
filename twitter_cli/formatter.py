@@ -1,7 +1,9 @@
+# Modified in the SummonLav fork; see FORK.md.
 """Tweet formatter for terminal output (rich) and JSON export."""
 
 from __future__ import annotations
 
+import re
 import sys
 from typing import List, Optional
 
@@ -9,9 +11,38 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from .models import Tweet, UserProfile
 from .timeutil import format_local_time, format_relative_time
+
+
+_TERMINAL_SEQUENCES = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*(?:[@-~]|$)"  # CSI (colors, cursor movement, etc.)
+    # Exclude every C1 introducer from payloads so malformed nested sequences
+    # cannot cause repeated scans of the same payload.
+    r"|(?:\x1b\]|\x9d)[^\x07\x1b\x80-\x9f]*(?:\x07|\x1b\\|\x9c|$)"  # OSC
+    r"|(?:\x1b[P^_X]|[\x90\x98\x9e\x9f])[^\x1b\x80-\x9f]*(?:\x1b\\|\x9c|$)"
+    r"|\x1b[ -/]*[0-~]"  # Other escape sequences, including character-set selection
+)
+_TERMINAL_CONTROLS = {
+    code: None for code in (*range(32), *range(0x7F, 0xA0)) if code not in (9, 10)
+}
+
+
+def sanitize_terminal_text(value: str) -> str:
+    """Remove terminal commands and control characters; retain tabs and newlines.
+
+    Strip complete sequences before their control bytes so OSC/DCS payloads do
+    not become visible text. The final pass also removes malformed escape
+    sequences' control bytes. This does not interpret or escape Markdown.
+    """
+    return _TERMINAL_SEQUENCES.sub("", value).translate(_TERMINAL_CONTROLS)
+
+
+def terminal_text(value: str) -> Text:
+    """Render untrusted text literally, without Rich markup or terminal commands."""
+    return Text(sanitize_terminal_text(value))
 
 
 def _make_console() -> Console:
@@ -48,7 +79,7 @@ def print_tweet_table(
     if not title:
         title = "📱 Twitter — %d tweets" % len(tweets)
 
-    table = Table(title=title, show_lines=True, expand=True)
+    table = Table(title=terminal_text(title), show_lines=True, expand=True)
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Author", style="cyan", width=18, no_wrap=True)
     table.add_column("Tweet", ratio=3)
@@ -63,7 +94,7 @@ def print_tweet_table(
             author_text += "\n🔄 @%s" % tweet.retweeted_by
 
         # Tweet text
-        text = tweet.text.replace("\n", " ").strip()
+        text = sanitize_terminal_text(tweet.text).replace("\n", " ").strip()
         if not full_text and len(text) > 120:
             text = text[:117] + "..."
 
@@ -82,7 +113,7 @@ def print_tweet_table(
         # Quoted tweet
         if tweet.quoted_tweet:
             qt = tweet.quoted_tweet
-            qt_text = qt.text.replace("\n", " ")
+            qt_text = sanitize_terminal_text(qt.text).replace("\n", " ")
             if not full_text and len(qt_text) > 60:
                 qt_text = qt_text[:57] + "..."
             text += "\n┌ @%s: %s" % (qt.author.screen_name, qt_text)
@@ -106,7 +137,9 @@ def print_tweet_table(
         # Score
         score_str = "%.1f" % tweet.score if tweet.score is not None else "-"
 
-        table.add_row(str(i + 1), author_text, text, stats, score_str)
+        table.add_row(
+            str(i + 1), terminal_text(author_text), terminal_text(text), terminal_text(stats), score_str
+        )
 
     console.print(table)
 
@@ -162,8 +195,8 @@ def print_tweet_detail(tweet: Tweet, console: Optional[Console] = None) -> None:
     )
 
     console.print(Panel(
-        "\n".join(body_parts),
-        title=header,
+        Text("\n".join(sanitize_terminal_text(part) for part in body_parts)),
+        title=terminal_text(header),
         border_style="blue",
         expand=True,
     ))
@@ -188,7 +221,7 @@ def article_to_markdown(tweet: Tweet) -> str:
     if tweet.article_text:
         lines.extend(["", tweet.article_text.strip()])
 
-    return "\n".join(lines).strip() + "\n"
+    return "\n".join(sanitize_terminal_text(line) for line in lines).strip() + "\n"
 
 
 def print_article(tweet: Tweet, console: Optional[Console] = None) -> None:
@@ -213,15 +246,15 @@ def print_article(tweet: Tweet, console: Optional[Console] = None) -> None:
         ),
     ]
     console.print(Panel(
-        "\n".join(meta_parts),
-        title="📰 %s" % title,
+        Text("\n".join(sanitize_terminal_text(part) for part in meta_parts)),
+        title=terminal_text("📰 %s" % title),
         border_style="blue",
         expand=True,
     ))
 
     if tweet.article_text:
         console.print()
-        console.print(Markdown(tweet.article_text))
+        console.print(Markdown(sanitize_terminal_text(tweet.article_text)))
 
 
 def print_filter_stats(
@@ -279,8 +312,8 @@ def print_user_profile(user: UserProfile, console: Optional[Console] = None) -> 
     lines.append("🔗 x.com/%s" % user.screen_name)
 
     console.print(Panel(
-        "\n".join(lines),
-        title=header,
+        Text("\n".join(sanitize_terminal_text(line) for line in lines)),
+        title=terminal_text(header),
         border_style="cyan",
         expand=True,
     ))
@@ -298,7 +331,7 @@ def print_user_table(
     if not title:
         title = "👥 Users — %d" % len(users)
 
-    table = Table(title=title, show_lines=True, expand=True)
+    table = Table(title=terminal_text(title), show_lines=True, expand=True)
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("User", style="cyan", width=20, no_wrap=True)
     table.add_column("Bio", ratio=3)
@@ -308,7 +341,7 @@ def print_user_table(
         verified = " ✓" if user.verified else ""
         user_text = "@%s%s\n%s" % (user.screen_name, verified, user.name)
 
-        bio = (user.bio or "").replace("\n", " ").strip()
+        bio = sanitize_terminal_text(user.bio or "").replace("\n", " ").strip()
         if len(bio) > 100:
             bio = bio[:97] + "..."
 
@@ -320,6 +353,6 @@ def print_user_table(
             )
         )
 
-        table.add_row(str(i + 1), user_text, bio, stats)
+        table.add_row(str(i + 1), terminal_text(user_text), terminal_text(bio), stats)
 
     console.print(table)

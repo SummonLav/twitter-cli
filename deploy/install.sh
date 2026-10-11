@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified in the SummonLav fork; see FORK.md.
 # Install twitter-safe from this checkout into a root-owned prefix.
 #
 # Run it from a root-owned clone so nothing your normal account can modify is
@@ -116,6 +117,9 @@ require_root_owned_tree "$SRC"
 for f in deploy/requirements.lock deploy/build-requirements.lock pyproject.toml twitter_cli/safe.py; do
     [ -f "$SRC/$f" ] || die "missing $SRC/$f"
 done
+require_root_owned "$SRC/deploy/path-security.sh"
+require_root_owned "$SRC/deploy/private-config.py"
+. "$SRC/deploy/path-security.sh"
 COMMIT=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)
 
 # ── 2. root-owned Python ────────────────────────────────────────────────
@@ -125,14 +129,20 @@ if [ -z "$PYTHON" ]; then
         Darwin) PYTHON=/Library/Frameworks/Python.framework/Versions/Current/bin/python3 ;;
     esac
 fi
-[ -x "$PYTHON" ] || die "Python not found at $PYTHON (macOS: install from python.org; Homebrew is user-writable)"
+# Validate the original path and every alias before executing even a version check.
+# In particular, a user-writable symlink to a root-owned Python is not trusted.
+PYTHON=$(resolve_root_owned_path "$PYTHON")
+[ -f "$PYTHON" ] && [ -x "$PYTHON" ] || die "Python is not an executable file: $PYTHON"
 # macOS python.org installs may be admin-group writable; FORK.md shows the chmod that fixes it.
-"$PYTHON" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+"$PYTHON" -I -S -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     || die "$PYTHON is older than 3.10"
-PY_REAL=$("$PYTHON" -I -c 'import os, sys; print(os.path.realpath(sys.executable))')
-PY_STDLIB=$("$PYTHON" -I -c 'import os, sysconfig; print(os.path.realpath(sysconfig.get_paths()["stdlib"]))')
-require_root_owned "$PY_REAL"
-require_root_owned "$PY_STDLIB"
+PY_REAL=$("$PYTHON" -I -S -c 'import sys; print(sys.executable)')
+PYTHON=$(resolve_root_owned_path "$PY_REAL")
+PY_REAL=$PYTHON
+PY_BASE=$("$PYTHON" -I -S -c 'import sys; print(sys._base_executable)')
+resolve_root_owned_path "$PY_BASE" >/dev/null
+PY_STDLIB=$("$PYTHON" -I -S -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')
+PY_STDLIB=$(resolve_root_owned_path "$PY_STDLIB")
 require_root_owned_tree "$PY_STDLIB"
 "$PYTHON" -I -c 'import venv, ensurepip' 2>/dev/null \
     || die "$PYTHON lacks venv/ensurepip (Debian/Ubuntu: apt install python3-venv)"
@@ -174,6 +184,7 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 SERVICE_UID=$(id -u "$SERVICE_USER")
 [ "$SERVICE_UID" != 0 ] || die "service user must not be root"
+[ "$SERVICE_UID" != "$(id -u "$AGENT_USER")" ] || die "agent and service user must have different UIDs"
 SERVICE_HOME=$("$PYTHON" -I -c 'import pwd, sys; print(pwd.getpwnam(sys.argv[1]).pw_dir)' "$SERVICE_USER")
 case "$SERVICE_HOME" in
     /var/*|/private/var/*) ;;
@@ -186,14 +197,38 @@ require_root_owned "$(dirname "$SERVICE_HOME_REAL")"
 chown "$SERVICE_USER" "$SERVICE_HOME_REAL"
 chmod 700 "$SERVICE_HOME_REAL"
 
+# A supplementary group reserved for this service protects authenticated proxy
+# URLs without granting the agent read access (macOS's shared staff is unsuitable).
+case "$OS" in
+    Linux)
+        CONFIG_GROUP=twitter-safe
+        getent group "$CONFIG_GROUP" >/dev/null || groupadd --system "$CONFIG_GROUP"
+        ;;
+    Darwin)
+        CONFIG_GROUP=_twitter_safe
+        dscl . -read "/Groups/$CONFIG_GROUP" >/dev/null 2>&1 \
+            || dseditgroup -o create -r "twitter-safe private config" "$CONFIG_GROUP"
+        ;;
+esac
+"$PYTHON" -I "$SRC/deploy/private-config.py" validate-group "$SERVICE_USER" "$CONFIG_GROUP"
+case "$OS" in
+    Linux) usermod -a -G "$CONFIG_GROUP" "$SERVICE_USER" ;;
+    Darwin) dseditgroup -o edit -a "$SERVICE_USER" -t user "$CONFIG_GROUP" ;;
+esac
+"$PYTHON" -I "$SRC/deploy/private-config.py" validate-group "$SERVICE_USER" "$CONFIG_GROUP"
+
 # ── 4. build: hash-locked wheels only, no network for the project itself ─
-STAGE=$(mktemp -d /tmp/twitter-safe-build.XXXXXX)
+mkdir -p "$PREFIX"
+require_root_owned "$PREFIX"
+# Keep the temporary interpreter's complete path under trusted directories too.
+STAGE=$(mktemp -d "$PREFIX/.build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT INT TERM
 PIP_LOCKED="--isolated --no-input --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps"
 PIP_OFFLINE="--isolated --no-input --disable-pip-version-check --no-index --no-deps"
 
 echo "Building twitter-cli $COMMIT with $PY_REAL"
 "$PYTHON" -I -m venv "$STAGE/build-venv"
+resolve_root_owned_path "$STAGE/build-venv/bin/python" >/dev/null
 # shellcheck disable=SC2086
 "$STAGE/build-venv/bin/python" -I -m pip install $PIP_LOCKED -r "$SRC/deploy/build-requirements.lock"
 cp -R "$SRC" "$STAGE/src"
@@ -201,11 +236,10 @@ rm -rf "$STAGE/src/.git" "$STAGE/src/.venv" "$STAGE/src/dist" "$STAGE/src/build"
 # shellcheck disable=SC2086
 "$STAGE/build-venv/bin/python" -I -m pip wheel $PIP_OFFLINE --no-build-isolation -w "$STAGE/wheels" "$STAGE/src"
 
-mkdir -p "$PREFIX"
-require_root_owned "$PREFIX"
 NEW_VENV="$PREFIX/venv.new"
 rm -rf "$NEW_VENV"
 "$PYTHON" -I -m venv "$NEW_VENV"
+resolve_root_owned_path "$NEW_VENV/bin/python" >/dev/null
 # shellcheck disable=SC2086
 "$NEW_VENV/bin/python" -I -m pip install $PIP_LOCKED -r "$SRC/deploy/requirements.lock"
 # shellcheck disable=SC2086
@@ -218,10 +252,13 @@ fi
 rm -rf "$PREFIX/venv.old"
 [ ! -d "$PREFIX/venv" ] || mv "$PREFIX/venv" "$PREFIX/venv.old"
 mv "$NEW_VENV" "$PREFIX/venv"
+resolve_root_owned_path "$PREFIX/venv/bin/python" >/dev/null
 rm -rf "$PREFIX/venv.old"
 
 # ── 5. launchers ─────────────────────────────────────────────────────────
 mkdir -p "$PREFIX/bin" "$PREFIX/etc"
+require_root_owned "$PREFIX/bin"
+require_root_owned "$PREFIX/etc"
 cat > "$PREFIX/bin/twitter-safe" <<EOF
 #!/bin/sh
 exec $PREFIX/venv/bin/python -I -m twitter_cli.safe "\$@"
@@ -233,28 +270,19 @@ EOF
 cat > "$PREFIX/bin/tw" <<EOF
 #!/bin/sh
 # Runs twitter-cli as $SERVICE_USER; the caller never sees the credentials.
+cd / || exit 1
 exec /usr/bin/sudo -n -u $SERVICE_USER $PREFIX/bin/twitter-safe "\$@"
 EOF
 chmod 755 "$PREFIX/bin/twitter-safe" "$PREFIX/bin/twitter-safe-setup" "$PREFIX/bin/tw"
 printf '%s\n' "$COMMIT" > "$PREFIX/INSTALLED_COMMIT"
 
 SITE_CONFIG="$PREFIX/etc/twitter-safe.json"
-if [ -n "$PROXY$LANG_SETTING" ]; then
-    "$PYTHON" -I -c '
-import json, sys
-config = {}
-if sys.argv[2]:
-    config["proxy"] = sys.argv[2]
-if sys.argv[3]:
-    config["lang"] = sys.argv[3]
-with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    json.dump(config, handle)
-' "$SITE_CONFIG" "$PROXY" "$LANG_SETTING"
-    chmod 644 "$SITE_CONFIG"
-fi
+printf '%s\000%s\000' "$PROXY" "$LANG_SETTING" \
+    | "$PYTHON" -I "$SRC/deploy/private-config.py" write "$SITE_CONFIG" "$CONFIG_GROUP"
 chown -R root "$PREFIX"
 chmod -R go-w "$PREFIX"
 require_root_owned_tree "$PREFIX"
+resolve_root_owned_path "$PREFIX/venv/bin/python" >/dev/null
 
 # ── 6. sudoers ───────────────────────────────────────────────────────────
 SUDOERS_TMP=$(mktemp /tmp/twitter-safe-sudoers.XXXXXX)
@@ -295,7 +323,7 @@ cat <<EOF
 twitter-safe installed from commit $COMMIT.
 
 Next, store the credentials yourself (not through the agent):
-  sudo -u $SERVICE_USER $PREFIX/bin/twitter-safe-setup
+  (cd / && sudo -u $SERVICE_USER $PREFIX/bin/twitter-safe-setup)
 
 Then the agent uses:
   $PREFIX/bin/tw whoami

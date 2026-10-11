@@ -4,11 +4,11 @@
 > pulling upstream. Browser cookie extraction is removed: credentials come only
 > from a private credentials file or explicit environment variables, and
 > `twitter-safe` runs the CLI under a separate OS account so an AI agent can use
-> it without being able to read the cookies. See [FORK.md](./FORK.md) (中文).
+> it without granting the agent account direct access to the stored credentials.
+> See [FORK.md](./FORK.md) (中文).
 
-[![CI](https://github.com/jackwener/twitter-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jackwener/twitter-cli/actions/workflows/ci.yml)
-[![PyPI version](https://badge.fury.io/py/twitter-cli.svg)](https://pypi.org/project/twitter-cli/)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://pypi.org/project/twitter-cli/)
+[![CI](https://github.com/SummonLav/twitter-cli/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SummonLav/twitter-cli/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](https://github.com/SummonLav/twitter-cli/blob/main/pyproject.toml)
 
 A terminal-first CLI for Twitter/X: read timelines, bookmarks, and user profiles without API keys.
 
@@ -323,11 +323,12 @@ twitter_cli/
 ### Use as AI Agent Skill
 
 twitter-cli ships with a [`SKILL.md`](./SKILL.md) so AI agents can execute common X/Twitter workflows.
+Install `tw` using [FORK.md](./FORK.md) first; the commands below install the agent instructions.
 
 #### [Skills CLI](https://github.com/vercel-labs/skills) (Recommended)
 
 ```bash
-npx skills add jackwener/twitter-cli
+npx skills add SummonLav/twitter-cli
 ```
 
 | Flag | Description |
@@ -340,7 +341,7 @@ npx skills add jackwener/twitter-cli
 
 ```bash
 mkdir -p .agents/skills
-git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
+git clone https://github.com/SummonLav/twitter-cli.git .agents/skills/twitter-cli
 ```
 
 #### ~~OpenClaw / ClawHub~~ (Deprecated)
@@ -544,11 +545,12 @@ score = likes_w * likes
 ### 作为 AI Agent Skill 使用
 
 twitter-cli 提供了 [`SKILL.md`](./SKILL.md)，可让 AI Agent 更稳定地调用本工具。
+先按 [FORK.md](./FORK.md) 安装 `tw`；下面的命令只安装 Agent 使用说明。
 
 #### [Skills CLI](https://github.com/vercel-labs/skills)（推荐）
 
 ```bash
-npx skills add jackwener/twitter-cli
+npx skills add SummonLav/twitter-cli
 ```
 
 | 参数 | 说明 |
@@ -561,7 +563,7 @@ npx skills add jackwener/twitter-cli
 
 ```bash
 mkdir -p .agents/skills
-git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
+git clone https://github.com/SummonLav/twitter-cli.git .agents/skills/twitter-cli
 ```
 
 #### ~~OpenClaw / ClawHub~~（已过时）
